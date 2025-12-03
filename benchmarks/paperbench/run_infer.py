@@ -9,11 +9,12 @@ import argparse
 import json
 import logging
 import os
+import random
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Optional
 
-import jinja2
 from datasets import load_dataset
+from jinja2 import Environment, FileSystemLoader
 
 from benchmarks.utils.evaluation import Evaluation
 from benchmarks.utils.evaluation_utils import get_default_on_result_writer
@@ -39,6 +40,23 @@ logger = logging.getLogger(__name__)
 DEFAULT_DOCKER_IMAGE = "ghcr.io/openhands/paperbench:latest"
 
 
+def generate_instruction(instance_data: dict, template_path: str | None = None) -> str:
+    """Generate instruction for the agent using Jinja template."""
+    if template_path is None:
+        # Use default template
+        template_path = os.path.join(os.path.dirname(__file__), "prompts", "default.j2")
+
+    # Set up Jinja2 environment
+    prompts_dir = os.path.dirname(template_path)
+    template_name = os.path.basename(template_path)
+    env = Environment(loader=FileSystemLoader(prompts_dir))
+    template = env.get_template(template_name)
+
+    # Render the instruction
+    instruction = template.render(instance=instance_data)
+    return instruction
+
+
 class PaperBenchEvaluation(Evaluation):
     """Paperbench evaluation orchestrator."""
 
@@ -57,12 +75,33 @@ class PaperBenchEvaluation(Evaluation):
             split=self.metadata.dataset_split,
         )
 
-        instances = []
-        for idx, item in enumerate(dataset):
-            if self.metadata.eval_limit and idx >= self.metadata.eval_limit:
-                break
+        # Get paper_ids filter if specified
+        paper_ids_filter = self.metadata.details.get("paper_ids", None)
 
-            # Create instance with paper_id as the unique identifier
+        # Convert dataset to list for filtering/shuffling
+        all_items = list(dataset)
+
+        # Filter by paper IDs if specified
+        if paper_ids_filter:
+            logger.info(f"Filtering to {len(paper_ids_filter)} specified paper IDs")
+            all_items = [item for item in all_items if item["paper_id"] in paper_ids_filter]
+            if not all_items:
+                logger.warning("No papers matched the specified paper IDs!")
+
+        # Shuffle if seed is specified
+        seed = self.metadata.details.get("seed", None)
+        if seed is not None:
+            logger.info(f"Shuffling papers with seed: {seed}")
+            random.seed(seed)
+            random.shuffle(all_items)
+
+        # Apply eval_limit after filtering/shuffling
+        if self.metadata.eval_limit and self.metadata.eval_limit > 0:
+            all_items = all_items[:self.metadata.eval_limit]
+
+        # Create instances
+        instances = []
+        for item in all_items:
             instance = EvalInstance(
                 id=item["paper_id"],
                 data={
@@ -77,7 +116,10 @@ class PaperBenchEvaluation(Evaluation):
             )
             instances.append(instance)
 
-        logger.info(f"Loaded {len(instances)} instances")
+        logger.info(f"Loaded {len(instances)} instances for evaluation")
+        if instances:
+            logger.info(f"Paper IDs: {[inst.id for inst in instances]}")
+
         return instances
 
     def prepare_workspace(self, instance: EvalInstance) -> RemoteWorkspace:
@@ -286,15 +328,6 @@ class PaperBenchEvaluation(Evaluation):
         Returns:
             The formatted instruction string.
         """
-        # Load the prompt template
-        if self.metadata.prompt_path:
-            prompt_path = Path(self.metadata.prompt_path)
-        else:
-            prompt_path = Path(__file__).parent / "prompts" / "default.j2"
-
-        with open(prompt_path, "r") as f:
-            template_str = f.read()
-
         # Extract leaf nodes from rubric
         rubric = instance.data.get("rubric", {})
         leaf_tasks = self._extract_leaf_nodes(rubric)
@@ -302,8 +335,9 @@ class PaperBenchEvaluation(Evaluation):
         # Create template context with leaf tasks
         template_data = {**instance.data, "leaf_tasks": leaf_tasks}
 
-        template = jinja2.Template(template_str)
-        instruction = template.render(instance=template_data)
+        # Generate instruction using template
+        template_path = self.metadata.prompt_path
+        instruction = generate_instruction(template_data, template_path)
 
         return instruction
 
@@ -312,6 +346,9 @@ class PaperBenchEvaluation(Evaluation):
     ) -> None:
         """
         Download paper assets (images, data files) to the workspace.
+
+        Assets are stored in the paperbench repo at:
+        data/papers/<paper_id>/<asset_filename>
 
         Args:
             instance: The evaluation instance.
@@ -326,14 +363,25 @@ class PaperBenchEvaluation(Evaluation):
         # Create assets directory
         workspace.execute_command("mkdir -p /workspace/assets")
 
+        paper_id = instance.id
+        base_url = "https://raw.githubusercontent.com/leandermaben/frontier-evals/main/project/paperbench"
+
         for asset in assets:
             try:
-                # Download asset using HuggingFace Hub
-                cmd = f"wget -P /workspace/assets '{asset}'"
+                # Assets are filenames, construct full URL to paperbench repo
+                if asset.startswith("http://") or asset.startswith("https://"):
+                    # Already a URL, use as-is
+                    asset_url = asset
+                else:
+                    # Filename only, construct URL to paperbench repo
+                    asset_url = f"{base_url}/data/papers/{paper_id}/{asset}"
+
+                logger.info(f"Downloading asset: {asset_url}")
+                cmd = f"wget -P /workspace/assets '{asset_url}'"
                 result = workspace.execute_command(cmd)
 
                 if result.returncode != 0:
-                    logger.warning(f"Failed to download asset: {asset}")
+                    logger.warning(f"Failed to download asset: {asset_url}")
             except Exception as e:
                 logger.warning(f"Error downloading asset {asset}: {e}")
 
@@ -431,6 +479,18 @@ def main():
         default="",
         help="Note to add to output directory name",
     )
+    parser.add_argument(
+        "--paper-ids",
+        type=str,
+        default=None,
+        help="Path to text file containing paper IDs (one per line) to evaluate",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for shuffling papers. Useful for reproducible random sampling.",
+    )
 
     args = parser.parse_args()
 
@@ -438,6 +498,14 @@ def main():
     with open(args.llm_config, "r") as f:
         llm_config = f.read()
     llm = LLM.model_validate_json(llm_config)
+
+    # Load paper IDs from file if specified
+    paper_ids = None
+    if args.paper_ids:
+        logger.info(f"Loading paper IDs from: {args.paper_ids}")
+        with open(args.paper_ids, "r") as f:
+            paper_ids = [line.strip() for line in f if line.strip()]
+        logger.info(f"Loaded {len(paper_ids)} paper IDs from file")
 
     # Create metadata
     metadata = EvalMetadata(
@@ -450,6 +518,8 @@ def main():
         workspace_type=args.workspace_type,
         details={
             "server_image": args.server_image,
+            "paper_ids": paper_ids,
+            "seed": args.seed,
         },
     )
 
