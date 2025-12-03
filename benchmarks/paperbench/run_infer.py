@@ -10,6 +10,9 @@ import json
 import logging
 import os
 import random
+import shutil
+import tarfile
+import tempfile
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -212,6 +215,12 @@ class PaperBenchEvaluation(Evaluation):
             # Extract the submission (code in /workspace)
             submission_info = self._extract_submission(workspace)
 
+            # Save submission to local directory
+            local_submission_path = self._save_submission_to_local(
+                instance, workspace
+            )
+            submission_info["local_path"] = str(local_submission_path)
+
             # Create output
             output = EvalOutput(
                 instance_id=instance.id,
@@ -385,6 +394,67 @@ class PaperBenchEvaluation(Evaluation):
             except Exception as e:
                 logger.warning(f"Error downloading asset {asset}: {e}")
 
+    def _save_submission_to_local(
+        self, instance: EvalInstance, workspace: RemoteWorkspace
+    ) -> Path:
+        """
+        Download the workspace contents (submission) to local directory.
+
+        Args:
+            instance: The evaluation instance.
+            workspace: The workspace containing the submission.
+
+        Returns:
+            Path to the local submission directory.
+        """
+        paper_id = instance.id
+        submissions_dir = Path(self.metadata.eval_output_dir) / "submissions"
+        submission_dir = submissions_dir / paper_id
+        submission_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Downloading submission for {paper_id} to {submission_dir}")
+
+        try:
+            # Create a tarball of the workspace in the container
+            tar_path = f"/tmp/submission_{paper_id}.tar.gz"
+            tar_cmd = f"tar -czf {tar_path} -C /workspace ."
+            result = workspace.execute_command(tar_cmd)
+
+            if result.returncode != 0:
+                logger.error(f"Failed to create tarball: {result.stderr}")
+                return submission_dir
+
+            # Download the tarball using workspace file_download
+            with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
+                tmp_path = tmp_file.name
+
+            try:
+                # Read the file content from workspace
+                cat_result = workspace.execute_command(f"cat {tar_path}")
+                if cat_result.returncode == 0:
+                    with open(tmp_path, "wb") as f:
+                        f.write(cat_result.stdout.encode("latin1"))
+
+                    # Extract the tarball to submission directory
+                    with tarfile.open(tmp_path, "r:gz") as tar:
+                        tar.extractall(submission_dir)
+
+                    logger.info(f"Submission saved to {submission_dir}")
+                else:
+                    logger.error(f"Failed to download tarball: {cat_result.stderr}")
+            finally:
+                # Clean up temp file
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
+                # Clean up tarball in container
+                workspace.execute_command(f"rm -f {tar_path}")
+
+        except Exception as e:
+            logger.error(f"Error saving submission for {paper_id}: {e}", exc_info=True)
+
+        return submission_dir
+
     def _extract_submission(self, workspace: RemoteWorkspace) -> dict[str, Any]:
         """
         Extract information about the agent's submission.
@@ -539,11 +609,52 @@ def main():
         num_workers=args.num_workers,
     )
 
-    # Run evaluation
-    output_file = output_dir / "output.jsonl"
-    logger.info(f"Starting evaluation, results will be written to {output_file}")
+    # Custom result writer that saves trajectory and additional files
+    def _paperbench_result_writer(output_dir: Path):
+        """Create a result writer that saves trajectory and other files."""
+        output_file = output_dir / "output.jsonl"
 
-    evaluator.run(on_result=get_default_on_result_writer(str(output_file)))
+        # Use default writer for JSONL
+        default_writer = get_default_on_result_writer(str(output_file))
+
+        def _write_result(instance: EvalInstance, output: EvalOutput):
+            # Write to JSONL using default writer
+            default_writer(instance, output)
+
+            # Save trajectory
+            traj_file = output_dir / f"traj_{instance.id}.json"
+            with open(traj_file, "w") as f:
+                json.dump(output.history, f, indent=2)
+
+            # Save test result
+            eval_file = output_dir / f"eval_{instance.id}.json"
+            with open(eval_file, "w") as f:
+                json.dump(output.test_result, f, indent=2)
+
+            # Save state info
+            state_file = output_dir / f"state_{instance.id}.json"
+            state_data = {
+                "instance_id": instance.id,
+                "history": output.history,
+                "num_events": len(output.history) if output.history else 0,
+                "submission_info": output.test_result,
+                "metrics": output.metrics,
+            }
+            with open(state_file, "w") as f:
+                json.dump(state_data, f, indent=2)
+
+            logger.info(
+                f"Saved results for {instance.id}: "
+                f"trajectory={traj_file}, eval={eval_file}, state={state_file}"
+            )
+
+        return _write_result
+
+    # Run evaluation
+    logger.info(f"Starting evaluation, results will be written to {output_dir}")
+    logger.info(f"Submissions will be saved to {output_dir / 'submissions'}")
+
+    evaluator.run(on_result=_paperbench_result_writer(output_dir))
 
     logger.info("Evaluation complete!")
 
