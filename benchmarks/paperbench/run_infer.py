@@ -22,6 +22,12 @@ from openhands.sdk import Agent, Conversation, LLM
 from openhands.tools.preset.default import get_default_tools
 from openhands.workspace import DockerWorkspace, RemoteWorkspace
 
+try:
+    from paperbench.rubric.tasks import TaskNode
+except ImportError:
+    TaskNode = None
+    logger.warning("paperbench not installed, leaf node extraction will be skipped")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -127,11 +133,14 @@ class PaperBenchEvaluation(Evaluation):
         logger.info(f"Evaluating instance: {instance.id}")
 
         try:
-            # Build the instruction from the template
-            instruction = self._build_instruction(instance)
+            # Save paper files to workspace
+            self._save_paper_files(instance, workspace)
 
             # Download paper assets if available
             self._download_assets(instance, workspace)
+
+            # Build the instruction from the template
+            instruction = self._build_instruction(instance, workspace)
 
             # Setup tools
             tools = get_default_tools(enable_browser=True)
@@ -184,19 +193,95 @@ class PaperBenchEvaluation(Evaluation):
             return EvalOutput(
                 instance_id=instance.id,
                 test_result={"error": str(e)},
-                instruction=self._build_instruction(instance),
+                instruction="Error occurred before instruction was built",
                 error=str(e),
                 history=[],
                 metrics={},
                 instance=instance.data,
             )
 
-    def _build_instruction(self, instance: EvalInstance) -> str:
+    def _extract_leaf_nodes(self, rubric: dict) -> List[dict]:
+        """
+        Extract leaf nodes from the rubric tree.
+
+        Args:
+            rubric: The rubric dictionary.
+
+        Returns:
+            List of leaf node dictionaries with task info.
+        """
+        if TaskNode is None:
+            return []
+
+        try:
+            # Convert rubric dict to TaskNode
+            task_tree = TaskNode(**rubric)
+
+            # Get leaf nodes
+            leaf_nodes = task_tree.get_leaf_nodes()
+
+            # Convert to simple dicts for template
+            leaf_tasks = []
+            for node in leaf_nodes:
+                leaf_tasks.append({
+                    "id": node.id,
+                    "requirements": node.requirements,
+                    "weight": node.weight,
+                    "task_category": node.task_category,
+                    "finegrained_task_category": node.finegrained_task_category,
+                })
+
+            return leaf_tasks
+        except Exception as e:
+            logger.warning(f"Error extracting leaf nodes: {e}")
+            return []
+
+    def _save_paper_files(
+        self, instance: EvalInstance, workspace: RemoteWorkspace
+    ) -> None:
+        """
+        Save paper content, rubric, and addendum to files in the workspace.
+
+        Args:
+            instance: The evaluation instance.
+            workspace: The workspace to save files to.
+        """
+        logger.info(f"Saving paper files for {instance.id}")
+
+        # Create paper directory
+        workspace.execute_command("mkdir -p /workspace/paper")
+
+        # Save paper content
+        paper_content = instance.data.get("paper_content", "")
+        workspace.execute_command(
+            f"cat > /workspace/paper/paper.md << 'EOFPAPER'\n{paper_content}\nEOFPAPER"
+        )
+
+        # Save rubric
+        rubric = instance.data.get("rubric", {})
+        rubric_json = json.dumps(rubric, indent=2)
+        workspace.execute_command(
+            f"cat > /workspace/paper/rubric.json << 'EOFRUBRIC'\n{rubric_json}\nEOFRUBRIC"
+        )
+
+        # Save addendum if present
+        addendum = instance.data.get("addendum", "")
+        if addendum:
+            workspace.execute_command(
+                f"cat > /workspace/paper/addendum.txt << 'EOFADDENDUM'\n{addendum}\nEOFADDENDUM"
+            )
+
+        logger.info(f"Paper files saved to /workspace/paper/")
+
+    def _build_instruction(
+        self, instance: EvalInstance, workspace: RemoteWorkspace
+    ) -> str:
         """
         Build the instruction prompt for the agent.
 
         Args:
             instance: The evaluation instance.
+            workspace: The workspace (not used but kept for consistency).
 
         Returns:
             The formatted instruction string.
@@ -210,8 +295,15 @@ class PaperBenchEvaluation(Evaluation):
         with open(prompt_path, "r") as f:
             template_str = f.read()
 
+        # Extract leaf nodes from rubric
+        rubric = instance.data.get("rubric", {})
+        leaf_tasks = self._extract_leaf_nodes(rubric)
+
+        # Create template context with leaf tasks
+        template_data = {**instance.data, "leaf_tasks": leaf_tasks}
+
         template = jinja2.Template(template_str)
-        instruction = template.render(instance=instance.data)
+        instruction = template.render(instance=template_data)
 
         return instruction
 

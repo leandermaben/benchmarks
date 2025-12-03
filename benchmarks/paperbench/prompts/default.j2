@@ -8,12 +8,16 @@ You are tasked with reproducing the results from an academic research paper. You
 **Title:** {{ instance.config.title }}
 {% endif %}
 
-## Paper Content
+## Paper Content Location
 
-{{ instance.paper_content }}
+The full paper content has been saved to: `/workspace/paper/paper.md`
+
+Please read this file carefully to understand the paper's methodology, experiments, and results.
 
 {% if instance.addendum %}
 ## Additional Information
+
+Additional context has been saved to: `/workspace/paper/addendum.txt`
 
 {{ instance.addendum }}
 {% endif %}
@@ -27,21 +31,52 @@ The following assets have been downloaded to `/workspace/assets/`:
 {% endfor %}
 {% endif %}
 
+## Fine-Grained Evaluation Tasks
+
+Your reproduction will be evaluated on the following specific tasks (from the paper's rubric):
+
+{% if instance.leaf_tasks %}
+{% for task in instance.leaf_tasks %}
+**{{ loop.index }}. {{ task.task_category }}{% if task.finegrained_task_category %} - {{ task.finegrained_task_category }}{% endif %}** (Weight: {{ task.weight }})
+   - {{ task.requirements }}
+{% endfor %}
+{% else %}
+The detailed evaluation rubric has been saved to: `/workspace/paper/rubric.json`
+Please review this file to understand the specific requirements for your reproduction.
+{% endif %}
+
+{% if instance.blacklist and instance.blacklist|length > 0 %}
+## ⚠️ CRITICAL RESTRICTIONS ⚠️
+
+**BLACKLISTED RESOURCES - DO NOT USE:**
+
+The following repositories and resources are **STRICTLY FORBIDDEN**. You must NOT visit, clone, or use any code from these sources:
+
+{% for item in instance.blacklist %}
+- ❌ {{ item }}
+{% endfor %}
+
+**You must implement the paper from scratch without using these blacklisted resources.**
+Visiting or using code from these sources will result in disqualification.
+{% endif %}
+
 ## Your Task
 
 Your objective is to reproduce the key results from this paper. Follow these guidelines:
 
 ### 1. UNDERSTANDING PHASE
-- Read and understand the paper thoroughly
-- Identify the main contributions and key results to reproduce
+- Read `/workspace/paper/paper.md` thoroughly
+- Understand the main contributions and key results
 - Note the datasets, models, and evaluation metrics used
 - Review the methodology and implementation details
+- Check `/workspace/paper/rubric.json` for detailed evaluation criteria
 
 ### 2. IMPLEMENTATION PHASE
 - Set up the necessary environment and dependencies
 - Implement the algorithms and models described in the paper
 - Download and prepare the required datasets
 - Write clean, well-documented code
+- **REMEMBER: Do not use blacklisted repositories!**
 
 ### 3. EXPERIMENTATION PHASE
 - Run experiments to reproduce the paper's results
@@ -51,11 +86,14 @@ Your objective is to reproduce the key results from this paper. Follow these gui
 
 ### 4. SUBMISSION REQUIREMENTS
 
-**CRITICAL:** You MUST create a file called `reproduce.sh` in the `/workspace` directory. This script should:
-- Install all necessary dependencies
-- Download any required datasets or pretrained models
+**CRITICAL:** You MUST create a file called `reproduce.sh` in the `/workspace` directory. This script will be executed in a fresh container to verify your reproduction.
+
+The `reproduce.sh` script should:
+- Install all necessary dependencies (use `requirements.txt` or inline pip/conda commands)
+- Download any required datasets or pretrained models (unless blacklisted)
 - Run the experiments to reproduce the main results
 - Generate output files with the reproduced results
+- Complete successfully (exit code 0)
 
 Example structure for `reproduce.sh`:
 ```bash
@@ -65,8 +103,8 @@ set -e
 # Install dependencies
 pip install -r requirements.txt
 
-# Download datasets (if needed)
-# python download_data.py
+# Download datasets (if needed and not blacklisted)
+python download_data.py
 
 # Run experiments
 python train_model.py --config config.yaml
@@ -78,48 +116,39 @@ python generate_results.py --output results/
 echo "Reproduction complete!"
 ```
 
-### 5. EVALUATION CRITERIA
+### 5. WORKING DIRECTORY
 
-Your submission will be evaluated based on:
-{% if instance.rubric %}
-- Adherence to the paper's methodology
-- Quality of code implementation
-- Accuracy of reproduced results compared to the original paper
-- Completeness of documentation
-- Successful execution of `reproduce.sh`
-
-**Specific evaluation rubric for this paper:**
-{{ instance.rubric | tojson(indent=2) }}
-{% else %}
-- Adherence to the paper's methodology
-- Quality of code implementation
-- Accuracy of reproduced results compared to the original paper
-- Completeness of documentation
-- Successful execution of `reproduce.sh`
-{% endif %}
+- Work in `/workspace` (your current directory)
+- Save paper-related files are in `/workspace/paper/`
+- Create your implementation in `/workspace`
+- Ensure `reproduce.sh` is in `/workspace` and is executable: `chmod +x reproduce.sh`
 
 ### 6. IMPORTANT NOTES
 
-- Work in the `/workspace` directory
-- Ensure `reproduce.sh` is executable: `chmod +x reproduce.sh`
-- Document your implementation choices and any assumptions made
+- Document your implementation choices and any assumptions
 - If exact reproduction is not possible, explain why in comments or a README
 - Be mindful of computational resources and runtime
 - Use version control (git) to track your changes
+- Test `reproduce.sh` before finishing to ensure it works correctly
+- **DO NOT visit or use code from blacklisted sources**
 
-{% if instance.blacklist and instance.blacklist|length > 0 %}
-### 7. RESTRICTIONS
+### 7. EVALUATION
 
-The following repositories/resources are blacklisted and should NOT be used:
-{% for item in instance.blacklist %}
-- {{ item }}
-{% endfor %}
-
-You must implement the paper from scratch without using these resources.
-{% endif %}
+Your submission will be evaluated based on:
+- Adherence to the paper's methodology
+- Quality of code implementation
+- Accuracy of reproduced results compared to the original paper
+- Completeness of documentation
+- Successful execution of `reproduce.sh`
+- Meeting the specific fine-grained evaluation criteria listed above
 
 ## Getting Started
 
-Begin by analyzing the paper structure and identifying the key components you need to reproduce. Create a plan for your implementation, then proceed step by step to build and validate your reproduction.
+1. Read the paper: `cat /workspace/paper/paper.md`
+2. Review the rubric: `cat /workspace/paper/rubric.json`
+{% if instance.addendum %}3. Check additional info: `cat /workspace/paper/addendum.txt`{% endif %}
+4. Create a plan for your implementation
+5. Implement step by step
+6. Test your `reproduce.sh` script
 
 Good luck with your reproduction effort!

@@ -1,22 +1,29 @@
 """
 Paperbench Evaluation Script
 
-This script evaluates agent submissions from the inference phase by:
-1. Running the reproduce.sh script in a fresh container
-2. Grading the results against the paper-specific rubric
-3. Generating evaluation scores
+This script evaluates agent submissions from the inference phase by using the
+paperbench grading infrastructure to run reproduce.sh and grade against rubrics.
 """
 
 import argparse
 import json
 import logging
-import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, List
 
-from datasets import load_dataset
 from tqdm import tqdm
+
+# Import paperbench grading functionality
+try:
+    from paperbench.grade import grade_submission, run_judge
+    PAPERBENCH_AVAILABLE = True
+except ImportError:
+    PAPERBENCH_AVAILABLE = False
+    logging.warning(
+        "paperbench package not available. Please install: "
+        "pip install 'git+https://github.com/leandermaben/frontier-evals.git#subdirectory=project/paperbench'"
+    )
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,281 +32,92 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Default Docker image for evaluation (with GPU support)
-DEFAULT_EVAL_IMAGE = "ghcr.io/openhands/paperbench:latest"
 
+def evaluate_one_submission(
+    paper_id: str,
+    submission_path: Path,
+    output_dir: Path,
+    judge_type: str = "default",
+    code_only: bool = False,
+) -> Dict:
+    """
+    Evaluate a single submission using paperbench grading infrastructure.
 
-class PaperBenchEvaluator:
-    """Evaluator for Paperbench submissions."""
+    Args:
+        paper_id: The paper identifier.
+        submission_path: Path to submission archive or directory.
+        output_dir: Directory to write evaluation results.
+        judge_type: Type of judge to use for grading.
+        code_only: If True, skip execution and only evaluate code.
 
-    def __init__(
-        self,
-        dataset_name: str = "leandermaben/paperbench",
-        eval_image: str = DEFAULT_EVAL_IMAGE,
-        use_gpu: bool = True,
-        timeout: int = 7 * 24 * 3600,  # 7 days in seconds
-    ):
-        """
-        Initialize the evaluator.
+    Returns:
+        Dictionary with evaluation results.
+    """
+    if not PAPERBENCH_AVAILABLE:
+        return {
+            "paper_id": paper_id,
+            "success": False,
+            "error": "paperbench package not available",
+            "score": 0.0,
+        }
 
-        Args:
-            dataset_name: HuggingFace dataset name for paperbench.
-            eval_image: Docker image to use for evaluation.
-            use_gpu: Whether to enable GPU support (requires NVIDIA Container Toolkit).
-            timeout: Maximum time for reproduction in seconds (default: 7 days).
-        """
-        self.dataset_name = dataset_name
-        self.eval_image = eval_image
-        self.use_gpu = use_gpu
-        self.timeout = timeout
-        self.rubrics = self._load_rubrics()
+    logger.info(f"Evaluating submission for paper: {paper_id}")
 
-    def _load_rubrics(self) -> Dict[str, Any]:
-        """
-        Load rubrics from the dataset.
-
-        Returns:
-            Dictionary mapping paper_id to rubric.
-        """
-        logger.info(f"Loading rubrics from {self.dataset_name}")
-        dataset = load_dataset(self.dataset_name, split="train")
-
-        rubrics = {}
-        for item in dataset:
-            rubrics[item["paper_id"]] = item["rubric"]
-
-        logger.info(f"Loaded {len(rubrics)} rubrics")
-        return rubrics
-
-    def evaluate_submission(
-        self, paper_id: str, submission_dir: Path, output_dir: Path
-    ) -> Dict[str, Any]:
-        """
-        Evaluate a single submission.
-
-        Args:
-            paper_id: The paper identifier.
-            submission_dir: Directory containing the submission (with reproduce.sh).
-            output_dir: Directory to write evaluation results.
-
-        Returns:
-            Dictionary with evaluation results.
-        """
-        logger.info(f"Evaluating submission for paper: {paper_id}")
-
-        # Check if reproduce.sh exists
-        reproduce_script = submission_dir / "reproduce.sh"
-        if not reproduce_script.exists():
-            logger.error(f"reproduce.sh not found in {submission_dir}")
-            return {
-                "paper_id": paper_id,
-                "success": False,
-                "error": "reproduce.sh not found",
-                "score": 0.0,
-            }
-
+    try:
         # Create output directory for this paper
         paper_output_dir = output_dir / paper_id
         paper_output_dir.mkdir(parents=True, exist_ok=True)
 
-        try:
-            # Step 1: Run reproduction in container
-            reproduction_result = self._run_reproduction(
-                paper_id, submission_dir, paper_output_dir
-            )
+        grader_output_path = str(paper_output_dir / "grader_output.json")
 
-            if not reproduction_result["success"]:
-                return {
-                    "paper_id": paper_id,
-                    "success": False,
-                    "error": reproduction_result["error"],
-                    "score": 0.0,
-                }
+        # Use paperbench's grade_submission function
+        # This handles:
+        # 1. Extracting submission
+        # 2. Running reproduce.sh in reproducer container
+        # 3. Grading against rubric
+        judge_output = grade_submission(
+            submission_path=str(submission_path),
+            paper_id=paper_id,
+            judge_type=judge_type,
+            grader_upload_path=grader_output_path,
+            run_group_id="openhands_eval",
+            runs_dir=str(output_dir),
+            run_id=paper_id,
+            code_only=code_only,
+            completer_config=None,  # Use default completer config
+        )
 
-            # Step 2: Run grading/judging
-            grading_result = self._run_grading(
-                paper_id, paper_output_dir
-            )
+        # Extract results
+        result = {
+            "paper_id": paper_id,
+            "success": judge_output.success if judge_output else False,
+            "score": judge_output.score if judge_output else 0.0,
+            "num_leaf_nodes": judge_output.num_leaf_nodes if judge_output else 0,
+            "num_invalid_leaf_nodes": judge_output.num_invalid_leaf_nodes if judge_output else 0,
+            "judge_type": judge_type,
+            "graded_at": judge_output.graded_at if judge_output else None,
+        }
 
-            # Combine results
-            result = {
-                "paper_id": paper_id,
-                "success": True,
-                "reproduction": reproduction_result,
-                "grading": grading_result,
-                "score": grading_result.get("score", 0.0),
-            }
+        # Save detailed results
+        result_file = paper_output_dir / "evaluation.json"
+        with open(result_file, "w") as f:
+            json.dump(result, f, indent=2)
 
-            # Save detailed results
-            result_file = paper_output_dir / "evaluation.json"
-            with open(result_file, "w") as f:
-                json.dump(result, f, indent=2)
+        logger.info(
+            f"Evaluation complete for {paper_id}: "
+            f"score={result['score']:.2f}, "
+            f"success={result['success']}"
+        )
+        return result
 
-            logger.info(
-                f"Evaluation complete for {paper_id}: score={result['score']:.2f}"
-            )
-            return result
-
-        except Exception as e:
-            logger.error(f"Error evaluating {paper_id}: {e}", exc_info=True)
-            return {
-                "paper_id": paper_id,
-                "success": False,
-                "error": str(e),
-                "score": 0.0,
-            }
-
-    def _run_reproduction(
-        self, paper_id: str, submission_dir: Path, output_dir: Path
-    ) -> Dict[str, Any]:
-        """
-        Run the reproduce.sh script in a fresh container.
-
-        Args:
-            paper_id: The paper identifier.
-            submission_dir: Directory containing the submission.
-            output_dir: Directory to write reproduction outputs.
-
-        Returns:
-            Dictionary with reproduction results.
-        """
-        logger.info(f"Running reproduction for {paper_id}")
-
-        # Clean up the submission directory (remove untracked files)
-        clean_cmd = ["git", "-C", str(submission_dir), "clean", "-fd"]
-        subprocess.run(clean_cmd, capture_output=True)
-
-        # Build Docker run command
-        docker_cmd = [
-            "docker", "run",
-            "--rm",
-            "-v", f"{submission_dir.absolute()}:/home/submission",
-            "-v", f"{output_dir.absolute()}:/home/output",
-            "-w", "/home/submission",
-        ]
-
-        # Add GPU support if enabled
-        if self.use_gpu:
-            docker_cmd.extend(["--gpus", "all"])
-
-        docker_cmd.extend([
-            self.eval_image,
-            "/bin/bash", "-c",
-            "bash reproduce.sh > /home/output/reproduce.log 2>&1"
-        ])
-
-        try:
-            result = subprocess.run(
-                docker_cmd,
-                timeout=self.timeout,
-                capture_output=True,
-                text=True,
-            )
-
-            return {
-                "success": result.returncode == 0,
-                "returncode": result.returncode,
-                "error": result.stderr if result.returncode != 0 else None,
-            }
-
-        except subprocess.TimeoutExpired:
-            logger.error(f"Reproduction timeout for {paper_id}")
-            return {
-                "success": False,
-                "error": f"Timeout after {self.timeout} seconds",
-            }
-        except Exception as e:
-            logger.error(f"Error running reproduction for {paper_id}: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-            }
-
-    def _run_grading(
-        self, paper_id: str, output_dir: Path
-    ) -> Dict[str, Any]:
-        """
-        Run grading/judging on the reproduction results.
-
-        Args:
-            paper_id: The paper identifier.
-            output_dir: Directory containing reproduction outputs.
-
-        Returns:
-            Dictionary with grading results.
-        """
-        logger.info(f"Grading results for {paper_id}")
-
-        # Get the rubric for this paper
-        rubric = self.rubrics.get(paper_id)
-        if not rubric:
-            logger.error(f"No rubric found for {paper_id}")
-            return {
-                "success": False,
-                "error": "Rubric not found",
-                "score": 0.0,
-            }
-
-        # Build Docker run command for grading
-        docker_cmd = [
-            "docker", "run",
-            "--rm",
-            "-v", f"{output_dir.absolute()}:/home/output",
-            "-w", "/home/output",
-            self.eval_image,
-            "python", "-m", "paperbench.judge",
-            "--paper-id", paper_id,
-            "--output-dir", "/home/output",
-        ]
-
-        try:
-            result = subprocess.run(
-                docker_cmd,
-                timeout=3600,  # 1 hour timeout for grading
-                capture_output=True,
-                text=True,
-            )
-
-            if result.returncode == 0:
-                # Parse grading results
-                grade_file = output_dir / "grade.json"
-                if grade_file.exists():
-                    with open(grade_file, "r") as f:
-                        grade_data = json.load(f)
-                    return {
-                        "success": True,
-                        "score": grade_data.get("score", 0.0),
-                        "details": grade_data,
-                    }
-                else:
-                    logger.warning(f"Grade file not found for {paper_id}")
-                    return {
-                        "success": False,
-                        "error": "Grade file not generated",
-                        "score": 0.0,
-                    }
-            else:
-                logger.error(f"Grading failed for {paper_id}: {result.stderr}")
-                return {
-                    "success": False,
-                    "error": result.stderr,
-                    "score": 0.0,
-                }
-
-        except subprocess.TimeoutExpired:
-            logger.error(f"Grading timeout for {paper_id}")
-            return {
-                "success": False,
-                "error": "Grading timeout",
-                "score": 0.0,
-            }
-        except Exception as e:
-            logger.error(f"Error grading {paper_id}: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "score": 0.0,
-            }
+    except Exception as e:
+        logger.error(f"Error evaluating {paper_id}: {e}", exc_info=True)
+        return {
+            "paper_id": paper_id,
+            "success": False,
+            "error": str(e),
+            "score": 0.0,
+        }
 
 
 def evaluate_from_inference_output(
@@ -307,20 +125,24 @@ def evaluate_from_inference_output(
     submissions_dir: Path,
     output_dir: Path,
     num_workers: int = 1,
-    use_gpu: bool = True,
-    eval_image: str = DEFAULT_EVAL_IMAGE,
+    judge_type: str = "default",
+    code_only: bool = False,
 ) -> None:
     """
-    Evaluate submissions from inference output.
+    Evaluate submissions from inference output using paperbench infrastructure.
 
     Args:
         inference_output: Path to inference output.jsonl file.
         submissions_dir: Directory containing submission subdirectories.
         output_dir: Directory to write evaluation results.
         num_workers: Number of parallel workers.
-        use_gpu: Whether to enable GPU support.
-        eval_image: Docker image to use for evaluation.
+        judge_type: Type of judge to use for grading.
+        code_only: If True, skip execution and only evaluate code.
     """
+    if not PAPERBENCH_AVAILABLE:
+        logger.error("paperbench package not available. Cannot proceed with evaluation.")
+        return
+
     # Load inference results
     inference_results = []
     with open(inference_output, "r") as f:
@@ -329,14 +151,22 @@ def evaluate_from_inference_output(
 
     logger.info(f"Loaded {len(inference_results)} inference results")
 
-    # Create evaluator
-    evaluator = PaperBenchEvaluator(
-        eval_image=eval_image,
-        use_gpu=use_gpu,
-    )
-
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Collect submission paths
+    submissions_to_eval = []
+    for result in inference_results:
+        paper_id = result["instance_id"]
+        submission_dir = submissions_dir / paper_id
+
+        if not submission_dir.exists():
+            logger.warning(f"Submission directory not found: {submission_dir}")
+            continue
+
+        submissions_to_eval.append((paper_id, submission_dir))
+
+    logger.info(f"Found {len(submissions_to_eval)} submissions to evaluate")
 
     # Evaluate submissions
     all_results = []
@@ -344,28 +174,24 @@ def evaluate_from_inference_output(
     if num_workers > 1:
         # Parallel evaluation
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            futures = []
-            for result in inference_results:
-                paper_id = result["instance_id"]
-                submission_dir = submissions_dir / paper_id
-
-                if not submission_dir.exists():
-                    logger.warning(f"Submission directory not found: {submission_dir}")
-                    continue
-
-                future = executor.submit(
-                    evaluator.evaluate_submission,
+            futures = {
+                executor.submit(
+                    evaluate_one_submission,
                     paper_id,
-                    submission_dir,
+                    submission_path,
                     output_dir,
-                )
-                futures.append((paper_id, future))
+                    judge_type,
+                    code_only,
+                ): paper_id
+                for paper_id, submission_path in submissions_to_eval
+            }
 
-            for paper_id, future in tqdm(futures, desc="Evaluating"):
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Evaluating"):
                 try:
                     result = future.result()
                     all_results.append(result)
                 except Exception as e:
+                    paper_id = futures[future]
                     logger.error(f"Error evaluating {paper_id}: {e}")
                     all_results.append({
                         "paper_id": paper_id,
@@ -375,36 +201,39 @@ def evaluate_from_inference_output(
                     })
     else:
         # Sequential evaluation
-        for result in tqdm(inference_results, desc="Evaluating"):
-            paper_id = result["instance_id"]
-            submission_dir = submissions_dir / paper_id
-
-            if not submission_dir.exists():
-                logger.warning(f"Submission directory not found: {submission_dir}")
-                continue
-
-            eval_result = evaluator.evaluate_submission(
-                paper_id, submission_dir, output_dir
+        for paper_id, submission_path in tqdm(submissions_to_eval, desc="Evaluating"):
+            result = evaluate_one_submission(
+                paper_id, submission_path, output_dir, judge_type, code_only
             )
-            all_results.append(eval_result)
+            all_results.append(result)
 
     # Write aggregate results
+    successful = [r for r in all_results if r["success"]]
+    summary = {
+        "total": len(all_results),
+        "successful": len(successful),
+        "failed": len(all_results) - len(successful),
+        "average_score": sum(r["score"] for r in all_results) / len(all_results) if all_results else 0.0,
+        "average_score_successful": sum(r["score"] for r in successful) / len(successful) if successful else 0.0,
+        "results": all_results,
+    }
+
     summary_file = output_dir / "evaluation_summary.json"
     with open(summary_file, "w") as f:
-        json.dump({
-            "total": len(all_results),
-            "successful": sum(1 for r in all_results if r["success"]),
-            "average_score": sum(r["score"] for r in all_results) / len(all_results) if all_results else 0.0,
-            "results": all_results,
-        }, f, indent=2)
+        json.dump(summary, f, indent=2)
 
-    logger.info(f"Evaluation complete! Results written to {summary_file}")
+    logger.info(
+        f"Evaluation complete! "
+        f"{successful}/{len(all_results)} successful "
+        f"(avg score: {summary['average_score']:.2f})"
+    )
+    logger.info(f"Results written to {summary_file}")
 
 
 def main():
     """Main entry point for Paperbench evaluation."""
     parser = argparse.ArgumentParser(
-        description="Evaluate Paperbench submissions",
+        description="Evaluate Paperbench submissions using paperbench grading infrastructure",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -431,15 +260,15 @@ def main():
         help="Number of parallel workers (default: 1)",
     )
     parser.add_argument(
-        "--no-gpu",
-        action="store_true",
-        help="Disable GPU support",
+        "--judge-type",
+        type=str,
+        default="default",
+        help="Type of judge to use for grading (default: default)",
     )
     parser.add_argument(
-        "--eval-image",
-        type=str,
-        default=DEFAULT_EVAL_IMAGE,
-        help=f"Docker image to use for evaluation (default: {DEFAULT_EVAL_IMAGE})",
+        "--code-only",
+        action="store_true",
+        help="Skip execution and only evaluate code (Code-Dev variant)",
     )
 
     args = parser.parse_args()
@@ -449,8 +278,8 @@ def main():
         submissions_dir=args.submissions_dir,
         output_dir=args.output_dir,
         num_workers=args.num_workers,
-        use_gpu=not args.no_gpu,
-        eval_image=args.eval_image,
+        judge_type=args.judge_type,
+        code_only=args.code_only,
     )
 
 
