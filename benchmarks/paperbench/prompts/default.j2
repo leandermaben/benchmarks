@@ -1,0 +1,125 @@
+You are tasked with reproducing the results from an academic research paper. Your goal is to implement the methods described in the paper from scratch and generate results that match the original paper as closely as possible.
+
+## Paper Information
+
+**Paper ID:** {{ instance.paper_id }}
+
+{% if instance.config and instance.config.title %}
+**Title:** {{ instance.config.title }}
+{% endif %}
+
+## Paper Content
+
+{{ instance.paper_content }}
+
+{% if instance.addendum %}
+## Additional Information
+
+{{ instance.addendum }}
+{% endif %}
+
+{% if instance.assets and instance.assets|length > 0 %}
+## Available Assets
+
+The following assets have been downloaded to `/workspace/assets/`:
+{% for asset in instance.assets %}
+- {{ asset }}
+{% endfor %}
+{% endif %}
+
+## Your Task
+
+Your objective is to reproduce the key results from this paper. Follow these guidelines:
+
+### 1. UNDERSTANDING PHASE
+- Read and understand the paper thoroughly
+- Identify the main contributions and key results to reproduce
+- Note the datasets, models, and evaluation metrics used
+- Review the methodology and implementation details
+
+### 2. IMPLEMENTATION PHASE
+- Set up the necessary environment and dependencies
+- Implement the algorithms and models described in the paper
+- Download and prepare the required datasets
+- Write clean, well-documented code
+
+### 3. EXPERIMENTATION PHASE
+- Run experiments to reproduce the paper's results
+- Generate figures, tables, and metrics as presented in the paper
+- Document any differences from the original results
+- Debug and iterate if results don't match
+
+### 4. SUBMISSION REQUIREMENTS
+
+**CRITICAL:** You MUST create a file called `reproduce.sh` in the `/workspace` directory. This script should:
+- Install all necessary dependencies
+- Download any required datasets or pretrained models
+- Run the experiments to reproduce the main results
+- Generate output files with the reproduced results
+
+Example structure for `reproduce.sh`:
+```bash
+#!/bin/bash
+set -e
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Download datasets (if needed)
+# python download_data.py
+
+# Run experiments
+python train_model.py --config config.yaml
+python evaluate.py --checkpoint best_model.pt
+
+# Generate results
+python generate_results.py --output results/
+
+echo "Reproduction complete!"
+```
+
+### 5. EVALUATION CRITERIA
+
+Your submission will be evaluated based on:
+{% if instance.rubric %}
+- Adherence to the paper's methodology
+- Quality of code implementation
+- Accuracy of reproduced results compared to the original paper
+- Completeness of documentation
+- Successful execution of `reproduce.sh`
+
+**Specific evaluation rubric for this paper:**
+{{ instance.rubric | tojson(indent=2) }}
+{% else %}
+- Adherence to the paper's methodology
+- Quality of code implementation
+- Accuracy of reproduced results compared to the original paper
+- Completeness of documentation
+- Successful execution of `reproduce.sh`
+{% endif %}
+
+### 6. IMPORTANT NOTES
+
+- Work in the `/workspace` directory
+- Ensure `reproduce.sh` is executable: `chmod +x reproduce.sh`
+- Document your implementation choices and any assumptions made
+- If exact reproduction is not possible, explain why in comments or a README
+- Be mindful of computational resources and runtime
+- Use version control (git) to track your changes
+
+{% if instance.blacklist and instance.blacklist|length > 0 %}
+### 7. RESTRICTIONS
+
+The following repositories/resources are blacklisted and should NOT be used:
+{% for item in instance.blacklist %}
+- {{ item }}
+{% endfor %}
+
+You must implement the paper from scratch without using these resources.
+{% endif %}
+
+## Getting Started
+
+Begin by analyzing the paper structure and identifying the key components you need to reproduce. Create a plan for your implementation, then proceed step by step to build and validate your reproduction.
+
+Good luck with your reproduction effort!
