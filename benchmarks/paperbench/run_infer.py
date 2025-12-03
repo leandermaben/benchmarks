@@ -23,6 +23,7 @@ from benchmarks.utils.evaluation import Evaluation
 from benchmarks.utils.evaluation_utils import get_default_on_result_writer
 from benchmarks.utils.models import EvalInstance, EvalMetadata, EvalOutput
 from openhands.sdk import Agent, Conversation, LLM
+from openhands.sdk.critic import PassCritic
 from openhands.tools.preset.default import get_default_tools
 from openhands.workspace import DockerWorkspace, RemoteWorkspace
 
@@ -586,6 +587,7 @@ def main():
         eval_output_dir=args.output_dir,
         eval_limit=args.n_limit,
         workspace_type=args.workspace_type,
+        critic=PassCritic(),  # Use PassCritic for paperbench (eval happens separately)
         details={
             "server_image": args.server_image,
             "paper_ids": paper_ids,
