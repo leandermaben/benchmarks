@@ -41,7 +41,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Default Docker image for Paperbench
-DEFAULT_DOCKER_IMAGE = "ghcr.io/openhands/paperbench:latest"
+DEFAULT_DOCKER_IMAGE = "paperbench-agent:latest"
 
 
 def generate_instruction(instance_data: dict, template_path: str | None = None) -> str:
