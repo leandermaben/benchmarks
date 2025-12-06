@@ -83,5 +83,10 @@ RUN pip install --no-cache-dir \
 # For grading on the computer
 RUN mkdir -p /submission /output
 
-# Entrypoint for the agent server
-ENTRYPOINT ["python", "-m", "openhands.agent_server", "--host", "0.0.0.0", "--port", "8000"]
+WORKDIR /home
+EXPOSE 8000
+
+# CRITICAL: ENTRYPOINT gets the command, CMD provides default args
+# When docker run passes args, they replace CMD but ENTRYPOINT stays
+ENTRYPOINT ["python", "-m", "openhands.agent_server"]
+CMD ["--host", "0.0.0.0", "--port", "8000"]
