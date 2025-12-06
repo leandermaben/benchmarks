@@ -8,6 +8,7 @@ paperbench grading infrastructure to run reproduce.sh and grade against rubrics.
 import argparse
 import json
 import logging
+import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List
@@ -31,6 +32,80 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def validate_paperbench_data() -> bool:
+    """
+    Validate that paperbench data directory is set up correctly.
+
+    Returns:
+        True if data is available, False otherwise.
+    """
+    data_dir = os.environ.get("PAPERBENCH_DATA_DIR")
+
+    if not data_dir:
+        logger.error(
+            "PAPERBENCH_DATA_DIR environment variable not set!\n\n"
+            "The paperbench data directory uses Git LFS and is NOT fetched during pip install.\n"
+            "You must manually set up the data directory:\n\n"
+            "1. Clone the frontier-evals repository:\n"
+            "   cd /path/to/your/data/location\n"
+            "   git clone https://github.com/leandermaben/frontier-evals.git --filter=blob:none\n"
+            "   cd frontier-evals\n\n"
+            "2. Fetch LFS data:\n"
+            "   git lfs fetch --include 'project/paperbench/data/**'\n"
+            "   git lfs checkout project/paperbench/data\n\n"
+            "3. Set environment variable:\n"
+            "   export PAPERBENCH_DATA_DIR=\"$(pwd)/project/paperbench/data\"\n\n"
+            "Or use the setup script:\n"
+            "   cd benchmarks/paperbench\n"
+            "   ./scripts/setup_data.sh\n\n"
+            "See README.md for more details."
+        )
+        return False
+
+    data_path = Path(data_dir)
+    if not data_path.exists():
+        logger.error(
+            f"PAPERBENCH_DATA_DIR points to non-existent directory: {data_dir}\n"
+            f"Please verify the path is correct."
+        )
+        return False
+
+    papers_dir = data_path / "papers"
+    if not papers_dir.exists():
+        logger.error(
+            f"Papers directory not found at: {papers_dir}\n"
+            f"The data directory structure may be incorrect.\n"
+            f"Expected: {data_dir}/papers/\n"
+            f"Please verify the data was cloned and LFS files were fetched correctly."
+        )
+        return False
+
+    # Check if there are any paper directories
+    paper_dirs = list(papers_dir.glob("*"))
+    if not paper_dirs:
+        logger.error(
+            f"No paper directories found in: {papers_dir}\n"
+            f"The LFS files may not have been fetched.\n"
+            f"Run: git lfs checkout project/paperbench/data"
+        )
+        return False
+
+    # Check a sample paper directory for rubric.json
+    sample_paper = paper_dirs[0]
+    rubric_file = sample_paper / "rubric.json"
+    if not rubric_file.exists():
+        logger.error(
+            f"rubric.json not found in sample paper: {sample_paper}\n"
+            f"The LFS files may not have been fetched.\n"
+            f"Run: git lfs checkout project/paperbench/data"
+        )
+        return False
+
+    logger.info(f"✓ Paperbench data directory validated: {data_dir}")
+    logger.info(f"✓ Found {len(paper_dirs)} paper directories")
+    return True
 
 
 def evaluate_one_submission(
@@ -272,6 +347,11 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Validate paperbench data directory is set up
+    if not validate_paperbench_data():
+        logger.error("Paperbench data validation failed. Cannot proceed with evaluation.")
+        exit(1)
 
     evaluate_from_inference_output(
         inference_output=args.inference_output,

@@ -6,18 +6,53 @@ The paperbench judge is part of the `paperbench` package and handles the evaluat
 
 ## 1. How the Judge Gets Paper Data
 
-### Source: Paperbench Package's Built-in Dataset
+### Source: Paperbench Data Directory (Git LFS)
 
-The judge **does NOT** get paper data from HuggingFace. Instead, it uses the **paperbench package's internal dataset** stored at:
+The judge **does NOT** get paper data from HuggingFace. Instead, it uses the **paperbench data directory** which is stored using **Git LFS** in the frontier-evals repository.
+
+**IMPORTANT**: When you install paperbench via `pip install git+...`, the LFS files are **NOT** automatically fetched. You must manually set up the data directory.
+
+### Data Directory Structure
 
 ```
 paperbench/data/papers/{paper_id}/
-├── paper.md                  # Paper content (markdown)
-├── rubric.json              # Evaluation rubric
-├── addendum.txt             # Additional information
-└── assets/                  # Paper-specific assets
+├── config.yaml              # Paper configuration
+├── paper.md                 # Paper content (markdown)
+├── paper.pdf                # Paper PDF
+├── rubric.json              # Evaluation rubric (LFS)
+├── addendum.md              # Additional information
+├── judge.addendum.md        # Judge-specific addendum
+├── blacklist.txt            # Blacklisted websites
+└── assets/                  # Paper-specific assets (LFS)
     ├── image1.png
     └── data.csv
+```
+
+### Required Setup
+
+Before running evaluation, you **must** set up the data directory:
+
+#### Option 1: Clone and fetch LFS data (Recommended)
+
+```bash
+# Clone the frontier-evals repository
+git clone https://github.com/leandermaben/frontier-evals.git --filter=blob:none
+cd frontier-evals
+
+# Fetch LFS data for paperbench
+git lfs fetch --include "project/paperbench/data/**"
+git lfs checkout project/paperbench/data
+
+# Set environment variable
+export PAPERBENCH_DATA_DIR="$(pwd)/project/paperbench/data"
+```
+
+#### Option 2: Use setup script
+
+```bash
+# Run the provided setup script
+cd benchmarks/paperbench
+./scripts/setup_data.sh
 ```
 
 ### How It's Accessed
@@ -42,10 +77,15 @@ judge_output = grade_submission(
 
 **Internally, the judge:**
 
-1. **Loads paper registry**: `from paperbench.paper_registry import get_paper`
-2. **Fetches paper metadata**: `paper = get_paper(paper_id)`
-3. **Loads rubric**: Reads from `paperbench/data/papers/{paper_id}/rubric.json`
-4. **Creates TaskNode tree**: Converts rubric JSON to hierarchical TaskNode structure
+1. **Loads paper registry**: `from paperbench.paper_registry import PaperRegistry`
+2. **Gets data directory**: Uses `PAPERBENCH_DATA_DIR` environment variable or falls back to package default
+3. **Fetches paper metadata**: `paper = registry.get_paper(paper_id)` reads `{data_dir}/papers/{paper_id}/config.yaml`
+4. **Loads rubric**: Reads from `{data_dir}/papers/{paper_id}/rubric.json` (LFS file)
+5. **Creates TaskNode tree**: Converts rubric JSON to hierarchical TaskNode structure
+
+**Environment Variable:**
+- `PAPERBENCH_DATA_DIR`: Points to the paperbench data directory (e.g., `/path/to/frontier-evals/project/paperbench/data`)
+- If not set, paperbench will try to use the package installation directory (which won't have LFS files)
 
 ### Data Structure
 

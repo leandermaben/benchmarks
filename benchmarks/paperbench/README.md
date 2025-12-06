@@ -52,7 +52,54 @@ The paperbench evaluation package needs to be installed separately:
 uv pip install "git+https://github.com/leandermaben/frontier-evals.git#subdirectory=project/paperbench"
 ```
 
-#### 4. Build the Docker Image
+#### 4. Set Up Paperbench Data (Required for Evaluation)
+
+**IMPORTANT**: The paperbench data directory uses Git LFS and is **NOT** fetched during pip install. You must manually clone and set it up before running evaluation.
+
+**Option 1: Clone and fetch LFS data (Recommended)**
+
+```bash
+# Clone the frontier-evals repository
+cd /path/to/your/data/location
+git clone https://github.com/leandermaben/frontier-evals.git --filter=blob:none
+cd frontier-evals
+
+# Fetch LFS data for paperbench
+git lfs fetch --include "project/paperbench/data/**"
+git lfs checkout project/paperbench/data
+
+# Set environment variable (add to your ~/.bashrc or ~/.zshrc for persistence)
+export PAPERBENCH_DATA_DIR="$(pwd)/project/paperbench/data"
+```
+
+**Option 2: Use the setup script**
+
+```bash
+# Run the provided setup script from the benchmarks directory
+cd benchmarks/paperbench
+./scripts/setup_data.sh /path/to/install/location
+```
+
+The script will:
+- Clone the frontier-evals repository
+- Fetch LFS files for the paperbench data directory
+- Display the `PAPERBENCH_DATA_DIR` path to export
+
+**Verify the setup:**
+
+```bash
+# Check that the environment variable is set
+echo $PAPERBENCH_DATA_DIR
+
+# Verify data directory contains papers
+ls $PAPERBENCH_DATA_DIR/papers/
+
+# You should see paper directories like: icml_001, icml_002, etc.
+```
+
+**Note**: Without this setup, evaluation will fail with errors about missing rubric.json or config.yaml files.
+
+#### 5. Build the Docker Image
 
 Build the Paperbench Docker image with the OpenHands SDK:
 
