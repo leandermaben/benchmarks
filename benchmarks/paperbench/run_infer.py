@@ -408,7 +408,9 @@ class PaperBenchEvaluation(Evaluation):
                 cmd = f"wget -P /workspace/assets '{asset_url}'"
                 result = workspace.execute_command(cmd)
 
-                if result.returncode != 0:
+                # Check exit code (result.exit_code for RemoteWorkspace)
+                exit_code = getattr(result, 'exit_code', getattr(result, 'returncode', None))
+                if exit_code and exit_code != 0:
                     logger.warning(f"Failed to download asset: {asset_url}")
             except Exception as e:
                 logger.warning(f"Error downloading asset {asset}: {e}")
@@ -439,8 +441,11 @@ class PaperBenchEvaluation(Evaluation):
             tar_cmd = f"tar -czf {tar_path} -C /workspace ."
             result = workspace.execute_command(tar_cmd)
 
-            if result.returncode != 0:
-                logger.error(f"Failed to create tarball: {result.stderr}")
+            # Check exit code (result.exit_code for RemoteWorkspace)
+            exit_code = getattr(result, 'exit_code', getattr(result, 'returncode', None))
+            if exit_code and exit_code != 0:
+                stderr = getattr(result, 'stderr', '')
+                logger.error(f"Failed to create tarball: {stderr}")
                 return submission_dir
 
             # Download the tarball using workspace file_download
@@ -452,7 +457,8 @@ class PaperBenchEvaluation(Evaluation):
             try:
                 # Read the file content from workspace
                 cat_result = workspace.execute_command(f"cat {tar_path}")
-                if cat_result.returncode == 0:
+                cat_exit_code = getattr(cat_result, 'exit_code', getattr(cat_result, 'returncode', None))
+                if cat_exit_code == 0:
                     with open(tmp_path, "wb") as f:
                         f.write(cat_result.stdout.encode("latin1"))
 
@@ -462,7 +468,8 @@ class PaperBenchEvaluation(Evaluation):
 
                     logger.info(f"Submission saved to {submission_dir}")
                 else:
-                    logger.error(f"Failed to download tarball: {cat_result.stderr}")
+                    cat_stderr = getattr(cat_result, 'stderr', '')
+                    logger.error(f"Failed to download tarball: {cat_stderr}")
             finally:
                 # Clean up temp file
                 if os.path.exists(tmp_path):

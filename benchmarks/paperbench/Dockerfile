@@ -80,6 +80,10 @@ RUN pip install --no-cache-dir \
     anthropic \
     jinja2
 
+# Install Playwright for browser support
+RUN pip install --no-cache-dir playwright
+RUN playwright install chromium --with-deps
+
 # For grading on the computer
 RUN mkdir -p /submission /output
 
