@@ -84,5 +84,4 @@ RUN pip install --no-cache-dir \
 RUN mkdir -p /submission /output
 
 # Entrypoint for the agent server
-ENTRYPOINT ["python", "-m", "openhands.agent_server"]
-CMD ["--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["python", "-m", "openhands.agent_server", "--host", "0.0.0.0", "--port", "8000"]
