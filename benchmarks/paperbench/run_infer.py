@@ -315,12 +315,17 @@ class PaperBenchEvaluation(Evaluation):
             f"cat > /workspace/paper/paper.md << 'EOFPAPER'\n{paper_content}\nEOFPAPER"
         )
 
-        # Save rubric
-        rubric = instance.data.get("rubric", {})
-        rubric_json = json.dumps(rubric, indent=2)
-        workspace.execute_command(
-            f"cat > /workspace/paper/rubric.json << 'EOFRUBRIC'\n{rubric_json}\nEOFRUBRIC"
-        )
+        # Save rubric only if include_rubric is True
+        include_rubric = self.metadata.details.get("include_rubric", False)
+        if include_rubric:
+            logger.info(f"Rubric will be available to agent for {instance.id}")
+            rubric = instance.data.get("rubric", {})
+            rubric_json = json.dumps(rubric, indent=2)
+            workspace.execute_command(
+                f"cat > /workspace/paper/rubric.json << 'EOFRUBRIC'\n{rubric_json}\nEOFRUBRIC"
+            )
+        else:
+            logger.info(f"Rubric withheld from agent for {instance.id}")
 
         # Save addendum if present
         addendum = instance.data.get("addendum", "")
@@ -348,8 +353,15 @@ class PaperBenchEvaluation(Evaluation):
         rubric = instance.data.get("rubric", {})
         leaf_tasks = self._extract_leaf_nodes(rubric)
 
-        # Create template context with leaf tasks
-        template_data = {**instance.data, "leaf_tasks": leaf_tasks}
+        # Check if rubric should be included
+        include_rubric = self.metadata.details.get("include_rubric", False)
+
+        # Create template context with leaf tasks and include_rubric flag
+        template_data = {
+            **instance.data,
+            "leaf_tasks": leaf_tasks,
+            "include_rubric": include_rubric,
+        }
 
         # Generate instruction using template
         template_path = self.metadata.prompt_path
@@ -576,6 +588,12 @@ def main():
         default=False,
         help="Enable GPU support in Docker workspace",
     )
+    parser.add_argument(
+        "--include-rubric",
+        action="store_true",
+        default=False,
+        help="Include rubric in agent prompt and workspace files. By default, rubric is NOT shown to agent.",
+    )
 
     args = parser.parse_args()
 
@@ -607,6 +625,7 @@ def main():
             "paper_ids": paper_ids,
             "seed": args.seed,
             "enable_gpu": args.enable_gpu,
+            "include_rubric": args.include_rubric,
         },
     )
 

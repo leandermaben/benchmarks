@@ -31,6 +31,7 @@ The following assets have been downloaded to `/workspace/assets/`:
 {% endfor %}
 {% endif %}
 
+{% if instance.include_rubric %}
 ## Fine-Grained Evaluation Tasks
 
 Your reproduction will be evaluated on the following specific tasks (from the paper's rubric):
@@ -43,6 +44,7 @@ Your reproduction will be evaluated on the following specific tasks (from the pa
 {% else %}
 The detailed evaluation rubric has been saved to: `/workspace/paper/rubric.json`
 Please review this file to understand the specific requirements for your reproduction.
+{% endif %}
 {% endif %}
 
 {% if instance.blacklist and instance.blacklist|length > 0 %}
@@ -145,10 +147,10 @@ Your submission will be evaluated based on:
 ## Getting Started
 
 1. Read the paper: `cat /workspace/paper/paper.md`
-2. Review the rubric: `cat /workspace/paper/rubric.json`
-{% if instance.addendum %}3. Check additional info: `cat /workspace/paper/addendum.txt`{% endif %}
-4. Create a plan for your implementation
-5. Implement step by step
-6. Test your `reproduce.sh` script
+{% if instance.include_rubric %}2. Review the rubric: `cat /workspace/paper/rubric.json`
+{% endif %}{% if instance.addendum %}{{ 2 if not instance.include_rubric else 3 }}. Check additional info: `cat /workspace/paper/addendum.txt`
+{% endif %}{{ 2 if not instance.include_rubric else (4 if instance.addendum else 3) }}. Create a plan for your implementation
+{{ 3 if not instance.include_rubric else (5 if instance.addendum else 4) }}. Implement step by step
+{{ 4 if not instance.include_rubric else (6 if instance.addendum else 5) }}. Test your `reproduce.sh` script
 
 Good luck with your reproduction effort!
