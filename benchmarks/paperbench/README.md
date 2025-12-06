@@ -26,7 +26,7 @@ The benchmark consists of 23 papers from ICML 2024. For each paper, an AI agent 
 
 ```bash
 # Install Git LFS (if not already installed)
-git lfs install
+make build
 
 # For GPU support (optional but recommended)
 # Follow instructions at: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html

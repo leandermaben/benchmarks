@@ -10,11 +10,10 @@ import json
 import logging
 import os
 import random
-import shutil
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List
 
 from datasets import load_dataset
 from jinja2 import Environment, FileSystemLoader
@@ -22,16 +21,12 @@ from jinja2 import Environment, FileSystemLoader
 from benchmarks.utils.evaluation import Evaluation
 from benchmarks.utils.evaluation_utils import get_default_on_result_writer
 from benchmarks.utils.models import EvalInstance, EvalMetadata, EvalOutput
-from openhands.sdk import Agent, Conversation, LLM
+from openhands.sdk import LLM, Agent, Conversation
 from openhands.sdk.critic import PassCritic
+from openhands.sdk.workspace import RemoteWorkspace
 from openhands.tools.preset.default import get_default_tools
-from openhands.workspace import DockerWorkspace, RemoteWorkspace
+from openhands.workspace import DockerWorkspace
 
-try:
-    from paperbench.rubric.tasks import TaskNode
-except ImportError:
-    TaskNode = None
-    logger.warning("paperbench not installed, leaf node extraction will be skipped")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,8 +35,14 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Default Docker image for Paperbench
-DEFAULT_DOCKER_IMAGE = "ghcr.io/openhands/paperbench:latest"
+try:
+    from paperbench.rubric.tasks import TaskNode
+except ImportError:
+    TaskNode = None
+    logger.warning("paperbench not installed, leaf node extraction will be skipped")
+
+
+DEFAULT_DOCKER_IMAGE = "leandermaben7/pb-env:1.0.0"
 
 
 def generate_instruction(instance_data: dict, template_path: str | None = None) -> str:
@@ -88,7 +89,9 @@ class PaperBenchEvaluation(Evaluation):
         # Filter by paper IDs if specified
         if paper_ids_filter:
             logger.info(f"Filtering to {len(paper_ids_filter)} specified paper IDs")
-            all_items = [item for item in all_items if item["paper_id"] in paper_ids_filter]
+            all_items = [
+                item for item in all_items if item["paper_id"] in paper_ids_filter
+            ]
             if not all_items:
                 logger.warning("No papers matched the specified paper IDs!")
 
@@ -101,7 +104,7 @@ class PaperBenchEvaluation(Evaluation):
 
         # Apply eval_limit after filtering/shuffling
         if self.metadata.eval_limit and self.metadata.eval_limit > 0:
-            all_items = all_items[:self.metadata.eval_limit]
+            all_items = all_items[: self.metadata.eval_limit]
 
         # Create instances
         instances = []
@@ -116,7 +119,7 @@ class PaperBenchEvaluation(Evaluation):
                     "addendum": item.get("addendum", ""),
                     "blacklist": item.get("blacklist", []),
                     "assets": item.get("assets", []),
-                }
+                },
             )
             instances.append(instance)
 
@@ -126,7 +129,9 @@ class PaperBenchEvaluation(Evaluation):
 
         return instances
 
-    def prepare_workspace(self, instance: EvalInstance) -> RemoteWorkspace:
+    def prepare_workspace(
+        self, instance: EvalInstance
+    ) -> DockerWorkspace | RemoteWorkspace:
         """
         Prepare workspace for a Paperbench instance.
 
@@ -144,6 +149,7 @@ class PaperBenchEvaluation(Evaluation):
                 server_image=server_image,
                 working_dir="/workspace",
                 platform="linux/amd64",
+                enable_gpu=self.metadata.details.get("enable_gpu", False),
             )
         else:
             # Remote workspace
@@ -217,9 +223,7 @@ class PaperBenchEvaluation(Evaluation):
             submission_info = self._extract_submission(workspace)
 
             # Save submission to local directory
-            local_submission_path = self._save_submission_to_local(
-                instance, workspace
-            )
+            local_submission_path = self._save_submission_to_local(instance, workspace)
             submission_info["local_path"] = str(local_submission_path)
 
             # Create output
@@ -275,13 +279,15 @@ class PaperBenchEvaluation(Evaluation):
             # Convert to simple dicts for template
             leaf_tasks = []
             for node in leaf_nodes:
-                leaf_tasks.append({
-                    "id": node.id,
-                    "requirements": node.requirements,
-                    "weight": node.weight,
-                    "task_category": node.task_category,
-                    "finegrained_task_category": node.finegrained_task_category,
-                })
+                leaf_tasks.append(
+                    {
+                        "id": node.id,
+                        "requirements": node.requirements,
+                        "weight": node.weight,
+                        "task_category": node.task_category,
+                        "finegrained_task_category": node.finegrained_task_category,
+                    }
+                )
 
             return leaf_tasks
         except Exception as e:
@@ -323,7 +329,7 @@ class PaperBenchEvaluation(Evaluation):
                 f"cat > /workspace/paper/addendum.txt << 'EOFADDENDUM'\n{addendum}\nEOFADDENDUM"
             )
 
-        logger.info(f"Paper files saved to /workspace/paper/")
+        logger.info("Paper files saved to /workspace/paper/")
 
     def _build_instruction(
         self, instance: EvalInstance, workspace: RemoteWorkspace
@@ -426,7 +432,9 @@ class PaperBenchEvaluation(Evaluation):
                 return submission_dir
 
             # Download the tarball using workspace file_download
-            with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
+            with tempfile.NamedTemporaryFile(
+                suffix=".tar.gz", delete=False
+            ) as tmp_file:
                 tmp_path = tmp_file.name
 
             try:
@@ -471,10 +479,10 @@ class PaperBenchEvaluation(Evaluation):
         has_reproduce_script = check_script.returncode == 0
 
         # Count files in workspace
-        count_result = workspace.execute_command(
-            "find /workspace -type f | wc -l"
+        count_result = workspace.execute_command("find /workspace -type f | wc -l")
+        file_count = (
+            int(count_result.stdout.strip()) if count_result.returncode == 0 else 0
         )
-        file_count = int(count_result.stdout.strip()) if count_result.returncode == 0 else 0
 
         return {
             "has_reproduce_script": has_reproduce_script,
@@ -562,6 +570,12 @@ def main():
         default=None,
         help="Random seed for shuffling papers. Useful for reproducible random sampling.",
     )
+    parser.add_argument(
+        "--enable-gpu",
+        action="store_true",
+        default=False,
+        help="Enable GPU support in Docker workspace",
+    )
 
     args = parser.parse_args()
 
@@ -592,6 +606,7 @@ def main():
             "server_image": args.server_image,
             "paper_ids": paper_ids,
             "seed": args.seed,
+            "enable_gpu": args.enable_gpu,
         },
     )
 
